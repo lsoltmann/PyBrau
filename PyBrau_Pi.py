@@ -36,6 +36,7 @@
     
     Software Requirements:
     - Python3
+    - Pyserial
     - TKINTER
     
     Hardware Requirements:
@@ -47,9 +48,7 @@
             
     OPEN ITEMS:
     1. Add duty cycle optimization routine
-    2. Background color different on Pi
-    3. Finish control button panel
-    
+    2. Verify that 'set' button doesn't overide automatic control, particularly DC
     
     '''
 
@@ -60,11 +59,14 @@
 # heatM_ON = 0,1 - indicates whether the mash RIMS heating element is on or not, cannot be turned out without pump on
 # heatB_ON = 0,1 - indicates whether the boil kettle heating element is on or not
 # tempMK = float - mash tun kettle temperature
-# setMK = float - setpoint temperature for mash tun kettle
+# setMK = int - setpoint temperature for mash tun kettle
+# setMK_IN = int - input setpoint temperature for mash tun kettle
 # tempMH = float - RIMS heater temperature
 # tempBK = float - boil kettle temperature
-# setBK = float - setpoint temperature for boil kettle
+# setBK = int - active setpoint temperature for boil kettle
+# setBK_IN = int - input setpoint temperature for boil kettle
 # boilMA = 0,1 - 0=manual control of boil element, 1=auto control of boil element
+# heatB_DC_IN = int - input duty cycle for manual control of boil heater
 # heatB_DC = int - duty cycle of boil heater
 # heatM_DC = int - duty cycle of mash heater
 # log_ON = 0,1 - data logging on or not
@@ -92,7 +94,7 @@ class brew_control:
         self.mainWindow.pack()
         
         #Debug
-        self.debug=0; #1=ON, 0=OFF, outputs all state variables to screen after any mouse event
+        self.debug=1; #1=ON, 0=OFF, outputs all state variables to screen after any mouse event
         
         #Initialize Global-ish variables
         self.comms_status=0
@@ -103,9 +105,12 @@ class brew_control:
         self.tempBK=0
         self.tempMH=0
         self.boilMA=0
-        self.setMK=154.0
-        self.setBK=170.0
+        self.setMK=0
+        self.setMK_IN=154
+        self.setBK=0
+        self.setBK_IN=170
         self.heatB_DC=0
+        self.heatB_DC_IN=0
         self.heatM_DC=0
         self.log_ON=0
         self.log_freq=1 #Hz, sample rate for data logging
@@ -153,9 +158,6 @@ class brew_control:
         self.init_mash_win()
         self.init_boil_win()
         self.init_switch_win()
-        #self.init_mash_setpoint()
-        #self.init_boil_setpoint()
-        #self.init_boil_DC()
         self.init_mash_stats()
         self.init_boil_stats()
         self.init_cntrl_button_win()
@@ -460,53 +462,185 @@ class brew_control:
     #################### BUTTON PANEL FOR TEMP/DC CONTROL ####################
     def init_cntrl_button_win(self):
         #Window location
-        win_loc_x=75
-        win_loc_y=310
+        win_loc_x=35
+        win_loc_y=320
         
         #Create the subframe where the all the switches are
         self.subframe_buttonPanel = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
         
         #Mash Temp +10 button
-        self.mash_p10_button = tk.Button(self.subframe_buttonPanel, text="M++",justify=tk.LEFT,command=lambda:self.mash_p10_command(self.mash_p10_button))
+        self.mash_p10_button = tk.Button(self.subframe_buttonPanel, text="M++",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_p10())
         self.mash_p10_button.grid(column = 0, row = 0, pady=(10,0),padx=(5,0))
         #Mash Temp -10 button
-        self.mash_m10_button = tk.Button(self.subframe_buttonPanel, text="M--",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.mash_m10_button = tk.Button(self.subframe_buttonPanel, text="M--",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_m10())
         self.mash_m10_button.grid(column = 0, row = 1, pady=2,padx=(5,0))
         #Mash Temp +1 button
-        self.mash_p1_button = tk.Button(self.subframe_buttonPanel, text="M+",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.mash_p1_button = tk.Button(self.subframe_buttonPanel, text="M+",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_p1())
         self.mash_p1_button.grid(column = 1, row = 0, pady=(10,0))
         #Mash Temp -1 button
-        self.mash_m1_button = tk.Button(self.subframe_buttonPanel, text="M-",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.mash_m1_button = tk.Button(self.subframe_buttonPanel, text="M-",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_m1())
         self.mash_m1_button.grid(column = 1, row = 1, pady=2)
         
         #Boil Temp +10 button
-        self.boil_p10_button = tk.Button(self.subframe_buttonPanel, text="B++",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.boil_p10_button = tk.Button(self.subframe_buttonPanel, text="B++",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_p10())
         self.boil_p10_button.grid(column = 2, row = 0, pady=(10,0))
         #Boil Temp -10 button
-        self.boil_m10_button = tk.Button(self.subframe_buttonPanel, text="B--",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.boil_m10_button = tk.Button(self.subframe_buttonPanel, text="B--",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_m10())
         self.boil_m10_button.grid(column = 2, row = 1, pady=2)
         #Boil Temp +1 button
-        self.boil_p1_button = tk.Button(self.subframe_buttonPanel, text="B+",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.boil_p1_button = tk.Button(self.subframe_buttonPanel, text="B+",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_p1())
         self.boil_p1_button.grid(column = 3, row = 0, pady=(10,0))
         #Boil Temp -1 button
-        self.boil_m1_button = tk.Button(self.subframe_buttonPanel, text="B-",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.boil_m1_button = tk.Button(self.subframe_buttonPanel, text="B-",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_m1())
         self.boil_m1_button.grid(column = 3, row = 1, pady=2)
         
         #DC +10 button
-        self.dc_p10_button = tk.Button(self.subframe_buttonPanel, text="DC++",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.dc_p10_button = tk.Button(self.subframe_buttonPanel, text="DC++",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_p10())
         self.dc_p10_button.grid(column = 4, row = 0, pady=(10,0))
         #DC -10 button
-        self.dc_m10_button = tk.Button(self.subframe_buttonPanel, text="DC--",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
+        self.dc_m10_button = tk.Button(self.subframe_buttonPanel, text="DC--",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_m10())
         self.dc_m10_button.grid(column = 4, row = 1, pady=2)
         #DC +1 button
-        self.dc_p1_button = tk.Button(self.subframe_buttonPanel, text="DC+",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
-        self.dc_p1_button.grid(column = 5, row = 0, pady=(10,0),padx=(0,5))
+        self.dc_p1_button = tk.Button(self.subframe_buttonPanel, text="DC+",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_p1())
+        self.dc_p1_button.grid(column = 5, row = 0, pady=(10,0))
         #DC -1 button
-        self.dc_m1_button = tk.Button(self.subframe_buttonPanel, text="DC-",justify=tk.LEFT)#,command=lambda:self.mash_command(self.mash_button))
-        self.dc_m1_button.grid(column = 5, row = 1, pady=2,padx=(0,5))
+        self.dc_m1_button = tk.Button(self.subframe_buttonPanel, text="DC-",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_m1())
+        self.dc_m1_button.grid(column = 5, row = 1, pady=2)
+        
+        #Set all inputs button
+        self.set_inputs_button = tk.Button(self.subframe_buttonPanel, text="SET   ",justify=tk.CENTER,wraplength=30,command=lambda:self.set_all_inputs_cmd())
+        self.set_inputs_button.grid(column = 6, row=0,rowspan=2,sticky=tk.N+tk.S,pady=(10,2),padx=(10,5))
         
         self.subframe_buttonPanel.place(x=win_loc_x, y=win_loc_y)
         tk.Label(self.master, text='CONTROL PANEL').place(x=win_loc_x+20, y=win_loc_y,anchor=tk.W)
+    
+    #################### BUTTON PANEL FUNCTIONS ####################
+    #BOIL
+    def input_boil_setpoint_p10(self):
+        # Increase boil temperature by 10degF and limit to 212
+        self.setBK_IN=self.setBK_IN+10
+        if self.setBK_IN>=212:
+            self.setBK_IN=212
+        self.stat_inBK.set(self.setBK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+    
+    def input_boil_setpoint_m10(self):
+        # Decrease boil temperature by 10degF and limit to 70
+        self.setBK_IN=self.setBK_IN-10
+        if self.setBK_IN<=70:
+            self.setBK_IN=70
+        self.stat_inBK.set(self.setBK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    def input_boil_setpoint_p1(self):
+        # Increase boil temperature by 1degF and limit to 212
+        self.setBK_IN=self.setBK_IN+1
+        if self.setBK_IN>=212:
+            self.setBK_IN=212
+        self.stat_inBK.set(self.setBK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+    
+    def input_boil_setpoint_m1(self):
+        # Decrease boil temperature by 1degF and limit to 70
+        self.setBK_IN=self.setBK_IN-1
+        if self.setBK_IN<=70:
+            self.setBK_IN=70
+        self.stat_inBK.set(self.setBK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    #DUTY CYCLE
+    def input_DC_setpoint_p10(self):
+        # Increase boil duty cycle by 10% and limit to 100
+        self.heatB_DC_IN=self.heatB_DC_IN+10
+        if self.heatB_DC_IN>=100:
+            self.heatB_DC_IN=100
+        self.stat_inheatB_DC.set(self.heatB_DC_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+    
+    def input_DC_setpoint_m10(self):
+        # Decrease boil duty cycle by 10% and limit to 0
+        self.heatB_DC_IN=self.heatB_DC_IN-10
+        if self.heatB_DC_IN<=0:
+            self.heatB_DC_IN=0
+        self.stat_inheatB_DC.set(self.heatB_DC_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    def input_DC_setpoint_p1(self):
+        # Increase boil duty cycle by 1% and limit to 100
+        self.heatB_DC_IN=self.heatB_DC_IN+1
+        if self.heatB_DC_IN>=100:
+            self.heatB_DC_IN=100
+        self.stat_inheatB_DC.set(self.heatB_DC_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+    
+    def input_DC_setpoint_m1(self):
+        # Decrease boil duty cycle by 1% and limit to 0
+        self.heatB_DC_IN=self.heatB_DC_IN-1
+        if self.heatB_DC_IN<=0:
+            self.heatB_DC_IN=0
+        self.stat_inheatB_DC.set(self.heatB_DC_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    #MASH
+    def input_mash_setpoint_p10(self):
+        # Increase mash temperature by 10degF and limit to 180
+        self.setMK_IN=self.setMK_IN+10
+        if self.setMK_IN>=180:
+            self.setMK_IN=180
+        self.stat_inMK.set(self.setMK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+    
+    def input_mash_setpoint_m10(self):
+        # Decrease mash temperature by 10degF and limit to 70
+        self.setMK_IN=self.setMK_IN-10
+        if self.setMK_IN<=70:
+            self.setMK_IN=70
+        self.stat_inMK.set(self.setMK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    def input_mash_setpoint_p1(self):
+        # Increase mash temperature by 1degF and limit to 180
+        self.setMK_IN=self.setMK_IN+1
+        if self.setMK_IN>=180:
+            self.setMK_IN=180
+        self.stat_inMK.set(self.setMK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+    
+    def input_mash_setpoint_m1(self):
+        # Decrease mash temperature by 1degF and limit to 70
+        self.setMK_IN=self.setMK_IN-1
+        if self.setMK_IN<=70:
+            self.setMK_IN=70
+        self.stat_inMK.set(self.setMK_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    #### SET ALL INPUTS
+    def set_all_inputs_cmd(self):
+        # Set variables
+        self.setMK=self.setMK_IN
+        self.setBK=self.setBK_IN
+        self.heatB_DC=self.heatB_DC_IN
+        
+        # Change the gui
+        self.stat_setMK.set(self.setMK)
+        self.stat_setBK.set(self.setBK)
+        self.stat_heatB_DC.set(self.heatB_DC)
+        
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
 
 
     #################### MASH WINDOW ####################
@@ -566,33 +700,6 @@ class brew_control:
         self.subcanvas_mash.pack()
     
     
-    #################### SET POINT MASH ####################
-    def init_mash_setpoint(self):
-        #Window location
-        win_loc_x=330
-        win_loc_y=150
-        
-        self.subframe_mash_setpoint = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
-        
-        #Entry field for setpoint
-        input_mash_setpoint = tk.StringVar(self.subframe_mash_setpoint, value=self.setMK)
-        input_mash_setpoint_field = tk.Entry(self.subframe_mash_setpoint, width=5, textvariable=input_mash_setpoint)#.pack(side=tk.LEFT,padx=(0,5))
-        input_mash_setpoint_field.grid(row=1,column=2,padx=(0,5)) # This works too
-        
-        #setpoint button
-        mash_setpoint_button = tk.Button(self.subframe_mash_setpoint, text="Set",command=lambda:self.new_mash_setpoint(input_mash_setpoint))
-        mash_setpoint_button.grid(row=1,column=1,pady=10,padx=(5,20))
-        
-        self.subframe_mash_setpoint.place(x=win_loc_x, y=win_loc_y)
-        tk.Label(self.master, text='MASH SETPOINT').place(x=win_loc_x+12, y=win_loc_y,anchor=tk.W)
-
-    def new_mash_setpoint(self,input_mash_setpoint):
-        self.setMK=float(input_mash_setpoint.get())
-        self.stat_setMK.set(self.setMK)
-        self.data_array[7]=self.setMK
-        ## FOR DEBUG ONLY
-        self.debug_display()
-    
     #################### MASH STATS ####################
     def init_mash_stats(self):
         #Window location
@@ -608,9 +715,13 @@ class brew_control:
         tk.Label(self.subframe_mash_stats, text="Heater DC:").grid(row=5,column=0,padx=(5,5))
         tk.Label(self.subframe_mash_stats, text="Pump Status:").grid(row=6,column=0,padx=(5,5))
         
+        self.stat_inMK=tk.StringVar(self.subframe_mash_stats,value=self.setMK_IN)
+        self.mash_stat_INsetpoint_label=tk.Label(self.subframe_mash_stats, textvariable=self.stat_inMK,foreground="blue")
+        self.mash_stat_INsetpoint_label.grid(row=0,column=1,pady=(5,0))
+
         self.stat_setMK=tk.StringVar(self.subframe_mash_stats,value=self.setMK)
         self.mash_stat_setpoint_label=tk.Label(self.subframe_mash_stats, textvariable=self.stat_setMK)
-        self.mash_stat_setpoint_label.grid(row=1,column=1,pady=(5,0))
+        self.mash_stat_setpoint_label.grid(row=1,column=1)
         
         self.stat_tempMK=tk.StringVar(self.subframe_mash_stats,value=self.tempMK)
         self.mash_stat_tempM_label=tk.Label(self.subframe_mash_stats, textvariable=self.stat_tempMK)
@@ -675,60 +786,6 @@ class brew_control:
         self.boil_temp_color=self.subcanvas_boil.create_text(self.boil_kettle_loc_x,self.boil_kettle_loc_y,text=self.tempBK,fill='black',anchor=tk.CENTER)
         self.subcanvas_boil.pack()
 
-    #################### SET POINT BOIL ####################
-    def init_boil_setpoint(self):
-        #Window location
-        win_loc_x=480
-        win_loc_y=150
-        
-        self.subframe_boil_setpoint = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
-        
-        #Entry field for setpoint
-        input_boil_setpoint = tk.StringVar(self.subframe_boil_setpoint, value=self.setBK)
-        input_boil_setpoint_field = tk.Entry(self.subframe_boil_setpoint, width=5, textvariable=input_boil_setpoint)#.pack(side=tk.LEFT,padx=(0,5))
-        input_boil_setpoint_field.grid(row=1,column=2,padx=(0,5)) # This works too
-        
-        #setpoint button
-        self.boil_setpoint_button = tk.Button(self.subframe_boil_setpoint, text="Set",command=lambda:self.new_boil_setpoint(input_boil_setpoint))
-        self.boil_setpoint_button.grid(row=1,column=1,pady=10,padx=(5,20))
-        
-        self.subframe_boil_setpoint.place(x=win_loc_x, y=win_loc_y)
-        tk.Label(self.master, text='BOIL SETPOINT').place(x=win_loc_x+12, y=win_loc_y,anchor=tk.W)
-    
-    def new_boil_setpoint(self,input_boil_setpoint):
-        self.setBK=float(input_boil_setpoint.get())
-        self.stat_setBK.set(self.setBK)
-        self.data_array[8]=self.setBK
-        ## FOR DEBUG ONLY
-        self.debug_display()
-
-
-    #################### BOIL MANUAL DUTY CYCLE ####################
-    def init_boil_DC(self):
-        #Window location
-        win_loc_x=630
-        win_loc_y=150
-        
-        self.subframe_boil_DC = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
-        
-        #Entry field for setpoint
-        input_boil_DC = tk.StringVar(self.subframe_boil_DC, value=self.heatB_DC)
-        input_boil_DC_setpoint_field = tk.Entry(self.subframe_boil_DC, width=5, textvariable=input_boil_DC)#.pack(side=tk.LEFT,padx=(0,5))
-        input_boil_DC_setpoint_field.grid(row=1,column=2,padx=(0,5)) # This works too
-        
-        #setpoint button
-        self.DC_setpoint_button = tk.Button(self.subframe_boil_DC, text="Set",command=lambda:self.new_dutycycle_boil(input_boil_DC))
-        self.DC_setpoint_button.grid(row=1,column=1,pady=10,padx=(5,20))
-        
-        self.subframe_boil_DC.place(x=win_loc_x, y=win_loc_y)
-        tk.Label(self.master, text='BOIL DUTY CYCLE').place(x=win_loc_x+5, y=win_loc_y,anchor=tk.W)
-    
-    def new_dutycycle_boil(self,input_boil_DC):
-        self.heatB_DC=float(input_boil_DC.get())
-        self.stat_heatB_DC.set(self.heatB_DC)
-        self.data_array[9]=self.heatB_DC
-        ## FOR DEBUG ONLY
-        self.debug_display()
 
     #################### BOIL STATS ####################
     def init_boil_stats(self):
@@ -745,9 +802,13 @@ class brew_control:
         tk.Label(self.subframe_boil_stats, text="Heater DC-IN:",foreground="blue").grid(row=5,column=0,padx=(5,5))
         tk.Label(self.subframe_boil_stats, text="Heater DC-ACT:").grid(row=6,column=0,padx=(5,5))
         
+        self.stat_inBK=tk.StringVar(self.subframe_boil_stats,value=self.setBK_IN)
+        self.boil_stat_INsetpoint_label=tk.Label(self.subframe_boil_stats, textvariable=self.stat_inBK,foreground="blue")
+        self.boil_stat_INsetpoint_label.grid(row=0,column=1,pady=(5,0))
+        
         self.stat_setBK=tk.StringVar(self.subframe_boil_stats,value=self.setBK)
         self.boil_stat_setpoint_label=tk.Label(self.subframe_boil_stats, textvariable=self.stat_setBK)
-        self.boil_stat_setpoint_label.grid(row=1,column=1,pady=(5,0))
+        self.boil_stat_setpoint_label.grid(row=1,column=1)
         
         self.stat_tempBK=tk.StringVar(self.subframe_boil_stats,value=self.tempBK)
         self.boil_stat_tempB_label=tk.Label(self.subframe_boil_stats, textvariable=self.stat_tempBK)
@@ -761,7 +822,11 @@ class brew_control:
         self.boil_stat_heatON_label=tk.Label(self.subframe_boil_stats, textvariable=self.stat_heatB_ON)
         self.boil_stat_heatON_label.grid(row=4,column=1)
         
-        self.stat_heatB_DC=tk.StringVar(self.subframe_boil_stats,value=self.heatM_DC)
+        self.stat_inheatB_DC=tk.StringVar(self.subframe_boil_stats,value=self.heatB_DC_IN)
+        self.boil_stat_INheatDC_label=tk.Label(self.subframe_boil_stats, textvariable=self.stat_inheatB_DC,foreground="blue")
+        self.boil_stat_INheatDC_label.grid(row=5,column=1)
+        
+        self.stat_heatB_DC=tk.StringVar(self.subframe_boil_stats,value=self.heatB_DC)
         self.boil_stat_heatDC_label=tk.Label(self.subframe_boil_stats, textvariable=self.stat_heatB_DC)
         self.boil_stat_heatDC_label.grid(row=6,column=1)
         
@@ -1057,8 +1122,11 @@ class brew_control:
             print('Boil temp = %.1f' % self.tempBK)
             print('Mash heater temp = %.1f' % self.tempMH)
             print('Boil type = %d' % self.boilMA)
+            print('Mash setpoint input = %.1f' % self.setMK_IN)
             print('Mash setpoint = %.1f' % self.setMK)
+            print('Boil setpoint input = %.1f' % self.setBK_IN)
             print('Boil setpoint = %.1f' % self.setBK)
+            print('Boil duty cycle input = %d' % self.heatB_DC_IN)
             print('Boil duty cycle = %d' % self.heatB_DC)
             print('Mash duty cycle = %d' % self.heatM_DC)
             print('Data logging = %d\n' % self.log_ON)
