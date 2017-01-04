@@ -70,6 +70,9 @@
 # heatB_DC = int - duty cycle of boil heater
 # heatM_DC = int - duty cycle of mash heater
 # log_ON = 0,1 - data logging on or not
+# DCopt= 0,1 - indicates whether duty cycle optimization algorithm is active or not
+# setDC_BW = int - Duty cycle weight given to boil in optimization algorithm (0 <= x <= 1, 0.5 is equal weight between mash and boil)
+# setDC_MW = int - Duty cycle weight given to mash in optimization algorithm (0 <= x <= 1, 0.5 is equal weight between mash and boil)
 
 
 import tkinter as tk
@@ -112,15 +115,20 @@ class brew_control:
         self.heatB_DC=0
         self.heatB_DC_IN=0
         self.heatM_DC=0
+        self.setDC_MW_IN=50
+        self.setDC_BW_IN=50
         self.log_ON=0
         self.log_freq=1 #Hz, sample rate for data logging
         self.temp_freq=2 #Hz, sample rate for reading temperatures
         self.temp_filt_cutoff=3 #Hz, cutoff frequency for temperature filter
         self.temp_filt_coef=(2*math.pi*(1/self.temp_freq)*self.temp_filt_cutoff)/(2*math.pi*(1/self.temp_freq)*self.temp_filt_cutoff+1)
         self.first_time=1
+        self.DCopt=0
+        self.setDC_BW=0.5
+        self.setDC_MW=0.5
         
         #Control variables
-        self.DCB_T=0.5 #Duty cycle period in seconds for boil heater
+        self.DCB_T=0.5 #Duty cycle period in seconds for boil heater ***DCB_T and DCM_T should be equal
         self.DCM_T=0.5 #Duty cycle period in seconds for mash heater
         self.P_M=0.375
         self.I_M=0.09375
@@ -147,7 +155,10 @@ class brew_control:
         #Array[11]=Logging frequency
         #Array[12]=error sum - mash
         #Array[13]=error sum -boil
-        self.data_array=mp.Array('d',[self.pump_ON,self.heatM_ON,self.heatB_ON,0.0,0.0,0.0,self.boilMA,self.setMK,self.setBK,self.heatB_DC,self.heatM_DC,self.log_freq,self.esum_M,self.esum_B])
+        #Array[14]=dutcy cycle control algorithm
+        #Array[15]=dutcy cycle weight, mash
+        #Array[16]=dutcy cycle weight, boil
+        self.data_array=mp.Array('d',[self.pump_ON,self.heatM_ON,self.heatB_ON,0.0,0.0,0.0,self.boilMA,self.setMK,self.setBK,self.heatB_DC,self.heatM_DC,self.log_freq,self.esum_M,self.esum_B,self.DCopt,self.setDC_MW,self.setDC_BW])
         self.loggingProc_EXIT=mp.Value('i', 0)
         self.boilManProc_EXIT=mp.Value('i', 0)
         self.boilAutoProc_EXIT=mp.Value('i', 0)
@@ -161,6 +172,8 @@ class brew_control:
         self.init_mash_stats()
         self.init_boil_stats()
         self.init_cntrl_button_win()
+        self.init_DCopt_stats()
+        self.init_DCopt_ACT()
     
         #Initialize switch panel in disabled mode since no device connection has been established
         self.pump_button.config(state = 'disabled')
@@ -193,8 +206,8 @@ class brew_control:
 
 
         #Entry field for device location
-        #daq_loc = tk.StringVar(subframe_daq, value="/dev/tty.usbserial-12345678") #Mac
-        daq_loc = tk.StringVar(subframe_daq, value="/dev/ttyUSB0")
+        daq_loc = tk.StringVar(subframe_daq, value="/dev/tty.usbserial-12345678") #Mac
+        #daq_loc = tk.StringVar(subframe_daq, value="/dev/ttyUSB0")
         #daq_loc = tk.StringVar(subframe_daq, value="test") #Makes testing easier
         daq_field = tk.Entry(subframe_daq, width=25, textvariable=daq_loc).pack(side=tk.RIGHT,padx=(0,5))
 
@@ -250,20 +263,10 @@ class brew_control:
                 self.first_time=1
                 #Set all process stop flags
                 self.loggingProc_EXIT.value=1
-                self.boilManProc_EXIT.value=1
-                self.boilAutoProc_EXIT.value=1
-                self.mashProc_EXIT.value=1
+                self.heater_control_Proc_EXIT.value=1
                 #End the multiprocesses if they exist
                 try:
-                    self.boil_manual_proc.join()
-                except:
-                    pass
-                try:
-                    self.boil_auto_proc.join()
-                except:
-                    pass
-                try:
-                    self.mash_proc.join()
+                    self.heater_control_proc.join()
                 except:
                     pass
                 try:
@@ -409,6 +412,7 @@ class brew_control:
             mash_button.config(state = 'disabled')
             self.subcanvas_mash.itemconfig(self.mash_pump_text, text='OFF',fill='black')
             self.subcanvas_mash.itemconfig(self.mash_pump_box,fill='white')
+            self.subcanvas_mash.itemconfig(self.mash_heater_color1,fill='white')
             self.stat_pump_ON.set('OFF')
             self.stat_heatM_ON.set('OFF')
             self.DAQ.setDigitalOutput(4,0)
@@ -428,11 +432,9 @@ class brew_control:
             self.heatB_DC=0
             self.stat_boilMA.set('AUTO')
             self.stat_heatB_DC.set(self.heatB_DC)
-            self.DC_setpoint_button.config(state = 'disabled')
         elif self.boilMA==1:
             boil_type_button.config(text="BOIL CNTL          <MAN>  AUTO",justify=tk.LEFT)
             self.boilMA=0
-            self.DC_setpoint_button.config(state = 'active')
             self.stat_boilMA.set('MAN')
 
         # Change the boil process if it was active
@@ -462,54 +464,80 @@ class brew_control:
     #################### BUTTON PANEL FOR TEMP/DC CONTROL ####################
     def init_cntrl_button_win(self):
         #Window location
-        win_loc_x=35
+        win_loc_x=13
         win_loc_y=320
         
         #Create the subframe where the all the switches are
         self.subframe_buttonPanel = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
         
+        #Mash Temp Label
+        self.mash_button_label=tk.Label(self.subframe_buttonPanel, text='MASH')
+        self.mash_button_label.grid(row=0,column=0,columnspan=2,pady=(5,0))
         #Mash Temp +10 button
-        self.mash_p10_button = tk.Button(self.subframe_buttonPanel, text="M++",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_p10())
-        self.mash_p10_button.grid(column = 0, row = 0, pady=(10,0),padx=(5,0))
+        self.mash_p10_button = tk.Button(self.subframe_buttonPanel, text="+10",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_p10())
+        self.mash_p10_button.grid(column = 0, row = 1,padx=(5,0))
         #Mash Temp -10 button
-        self.mash_m10_button = tk.Button(self.subframe_buttonPanel, text="M--",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_m10())
-        self.mash_m10_button.grid(column = 0, row = 1, pady=2,padx=(5,0))
+        self.mash_m10_button = tk.Button(self.subframe_buttonPanel, text="-10",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_m10())
+        self.mash_m10_button.grid(column = 0, row = 2,padx=(5,0))
         #Mash Temp +1 button
-        self.mash_p1_button = tk.Button(self.subframe_buttonPanel, text="M+",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_p1())
-        self.mash_p1_button.grid(column = 1, row = 0, pady=(10,0))
+        self.mash_p1_button = tk.Button(self.subframe_buttonPanel, text="+1",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_p1())
+        self.mash_p1_button.grid(column = 1, row = 1)
         #Mash Temp -1 button
-        self.mash_m1_button = tk.Button(self.subframe_buttonPanel, text="M-",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_m1())
-        self.mash_m1_button.grid(column = 1, row = 1, pady=2)
+        self.mash_m1_button = tk.Button(self.subframe_buttonPanel, text="-1",justify=tk.LEFT,command=lambda:self.input_mash_setpoint_m1())
+        self.mash_m1_button.grid(column = 1, row = 2)
         
+        #Boil Temp Label
+        self.boil_button_label=tk.Label(self.subframe_buttonPanel, text='BOIL')
+        self.boil_button_label.grid(row=0,column=2,columnspan=2,pady=(5,0))
         #Boil Temp +10 button
-        self.boil_p10_button = tk.Button(self.subframe_buttonPanel, text="B++",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_p10())
-        self.boil_p10_button.grid(column = 2, row = 0, pady=(10,0))
+        self.boil_p10_button = tk.Button(self.subframe_buttonPanel, text="+10",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_p10())
+        self.boil_p10_button.grid(column = 2, row = 1,padx=(5,0))
         #Boil Temp -10 button
-        self.boil_m10_button = tk.Button(self.subframe_buttonPanel, text="B--",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_m10())
-        self.boil_m10_button.grid(column = 2, row = 1, pady=2)
+        self.boil_m10_button = tk.Button(self.subframe_buttonPanel, text="-10",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_m10())
+        self.boil_m10_button.grid(column = 2, row = 2,padx=(5,0))
         #Boil Temp +1 button
-        self.boil_p1_button = tk.Button(self.subframe_buttonPanel, text="B+",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_p1())
-        self.boil_p1_button.grid(column = 3, row = 0, pady=(10,0))
+        self.boil_p1_button = tk.Button(self.subframe_buttonPanel, text="+1",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_p1())
+        self.boil_p1_button.grid(column = 3, row = 1)
         #Boil Temp -1 button
-        self.boil_m1_button = tk.Button(self.subframe_buttonPanel, text="B-",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_m1())
-        self.boil_m1_button.grid(column = 3, row = 1, pady=2)
+        self.boil_m1_button = tk.Button(self.subframe_buttonPanel, text="-1",justify=tk.LEFT,command=lambda:self.input_boil_setpoint_m1())
+        self.boil_m1_button.grid(column = 3, row = 2)
         
+        #DC Temp Label
+        self.dc_button_label=tk.Label(self.subframe_buttonPanel, text='DC')
+        self.dc_button_label.grid(row=0,column=4,columnspan=2,pady=(5,0))
         #DC +10 button
-        self.dc_p10_button = tk.Button(self.subframe_buttonPanel, text="DC++",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_p10())
-        self.dc_p10_button.grid(column = 4, row = 0, pady=(10,0))
+        self.dc_p10_button = tk.Button(self.subframe_buttonPanel, text="+10",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_p10())
+        self.dc_p10_button.grid(column = 4, row = 1, padx=(5,0))
         #DC -10 button
-        self.dc_m10_button = tk.Button(self.subframe_buttonPanel, text="DC--",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_m10())
-        self.dc_m10_button.grid(column = 4, row = 1, pady=2)
+        self.dc_m10_button = tk.Button(self.subframe_buttonPanel, text="-10",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_m10())
+        self.dc_m10_button.grid(column = 4, row = 2, padx=(5,0))
         #DC +1 button
-        self.dc_p1_button = tk.Button(self.subframe_buttonPanel, text="DC+",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_p1())
-        self.dc_p1_button.grid(column = 5, row = 0, pady=(10,0))
+        self.dc_p1_button = tk.Button(self.subframe_buttonPanel, text="+1",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_p1())
+        self.dc_p1_button.grid(column = 5, row = 1)
         #DC -1 button
-        self.dc_m1_button = tk.Button(self.subframe_buttonPanel, text="DC-",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_m1())
-        self.dc_m1_button.grid(column = 5, row = 1, pady=2)
+        self.dc_m1_button = tk.Button(self.subframe_buttonPanel, text="-1",justify=tk.LEFT,command=lambda:self.input_DC_setpoint_m1())
+        self.dc_m1_button.grid(column = 5, row = 2)
+        
+        #Weighting critiera for duty cycle control optimization
+        #DC Weight Label
+        self.dcw_button_label=tk.Label(self.subframe_buttonPanel, text='DC Wt')
+        self.dcw_button_label.grid(row=0,column=6,columnspan=2,pady=(5,0))
+        #DC_W +10 button
+        self.dcw_p10_button = tk.Button(self.subframe_buttonPanel, text="+10",justify=tk.LEFT,command=lambda:self.input_DC_W_p10())
+        self.dcw_p10_button.grid(column = 6, row = 1, padx=(5,0))
+        #DC_W -10 button
+        self.dcw_m10_button = tk.Button(self.subframe_buttonPanel, text="-10",justify=tk.LEFT,command=lambda:self.input_DC_W_m10())
+        self.dcw_m10_button.grid(column = 6, row = 2, padx=(5,0))
+        #DC_W +1 button
+        self.dcw_p1_button = tk.Button(self.subframe_buttonPanel, text="+1",justify=tk.LEFT,command=lambda:self.input_DC_W_p1())
+        self.dcw_p1_button.grid(column = 7, row = 1)
+        #DC_W -1 button
+        self.dcw_m1_button = tk.Button(self.subframe_buttonPanel, text="-1",justify=tk.LEFT,command=lambda:self.input_DC_W_m1())
+        self.dcw_m1_button.grid(column = 7, row = 2)
         
         #Set all inputs button
         self.set_inputs_button = tk.Button(self.subframe_buttonPanel, text="SET   ",justify=tk.CENTER,wraplength=30,command=lambda:self.set_all_inputs_cmd())
-        self.set_inputs_button.grid(column = 6, row=0,rowspan=2,sticky=tk.N+tk.S,pady=(10,2),padx=(10,5))
+        self.set_inputs_button.grid(column = 8, row=1,rowspan=2,sticky=tk.N+tk.S,pady=(2,0),padx=(5,5))
         
         self.subframe_buttonPanel.place(x=win_loc_x, y=win_loc_y)
         tk.Label(self.master, text='CONTROL PANEL').place(x=win_loc_x+20, y=win_loc_y,anchor=tk.W)
@@ -626,17 +654,67 @@ class brew_control:
         ## FOR DEBUG ONLY
         self.debug_display()
 
+    #DC Weight
+    def input_DC_W_p10(self):
+        # Increase duty cycle optimization mash weight by 10% and limit to 99%
+        self.setDC_MW_IN=self.setDC_MW_IN+10
+        if self.setDC_MW_IN>=99:
+            self.setDC_MW_IN=99
+        self.stat_inDCMW.set(self.setDC_MW_IN)
+        self.stat_inDCBW.set(100-self.setDC_MW_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    def input_DC_W_m10(self):
+        # Decrease duty cycle optimization mash weight by 10% and limit to 1%
+        self.setDC_MW_IN=self.setDC_MW_IN-10
+        if self.setDC_MW_IN<=1:
+            self.setDC_MW_IN=1
+        self.stat_inDCMW.set(self.setDC_MW_IN)
+        self.stat_inDCBW.set(100-self.setDC_MW_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    def input_DC_W_p1(self):
+        # Increase duty cycle optimization mash weight by 1% and limit to 99%
+        self.setDC_MW_IN=self.setDC_MW_IN+1
+        if self.setDC_MW_IN>=99:
+            self.setDC_MW_IN=99
+        self.stat_inDCMW.set(self.setDC_MW_IN)
+        self.stat_inDCBW.set(100-self.setDC_MW_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
+    def input_DC_W_m1(self):
+        # Decrease duty cycle optimization mash weight by 1% and limit to 1%
+        self.setDC_MW_IN=self.setDC_MW_IN-1
+        if self.setDC_MW_IN<=1:
+            self.setDC_MW_IN=1
+        self.stat_inDCMW.set(self.setDC_MW_IN)
+        self.stat_inDCBW.set(100-self.setDC_MW_IN)
+        ## FOR DEBUG ONLY
+        self.debug_display()
+
     #### SET ALL INPUTS
     def set_all_inputs_cmd(self):
         # Set variables
         self.setMK=self.setMK_IN
+        self.data_array[7]=self.setMK
         self.setBK=self.setBK_IN
+        self.data_array[8]=self.setBK
         self.heatB_DC=self.heatB_DC_IN
+        self.data_array[9]=self.heatB_DC
+        self.setDC_MW=self.setDC_MW_IN/100
+        self.data_array[15]=self.setDC_MW
+        self.setDC_BW=(100-self.setDC_MW_IN)/100
+        self.data_array[16]=self.setDC_BW
         
-        # Change the gui
+        # Update the gui
         self.stat_setMK.set(self.setMK)
         self.stat_setBK.set(self.setBK)
         self.stat_heatB_DC.set(self.heatB_DC)
+        self.stat_setDCMW.set(self.setDC_MW_IN)
+        self.stat_setDCBW.set(100-self.setDC_MW_IN)
         
         ## FOR DEBUG ONLY
         self.debug_display()
@@ -707,13 +785,13 @@ class brew_control:
         win_loc_y=150
         
         self.subframe_mash_stats = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
-        tk.Label(self.subframe_mash_stats, text="Setpoint-IN:",foreground="blue").grid(row=0,column=0,padx=(5,5),pady=(5,0))
-        tk.Label(self.subframe_mash_stats, text="Setpoint-ACT:").grid(row=1,column=0,padx=(5,5))
-        tk.Label(self.subframe_mash_stats, text="Mash Temp:").grid(row=2,column=0,padx=(5,5))
-        tk.Label(self.subframe_mash_stats, text="Heater Temp:").grid(row=3,column=0,padx=(5,5))
-        tk.Label(self.subframe_mash_stats, text="Heater Status:").grid(row=4,column=0,padx=(5,5))
-        tk.Label(self.subframe_mash_stats, text="Heater DC:").grid(row=5,column=0,padx=(5,5))
-        tk.Label(self.subframe_mash_stats, text="Pump Status:").grid(row=6,column=0,padx=(5,5))
+        tk.Label(self.subframe_mash_stats, text="Setpoint-IN:",foreground="blue").grid(row=0,column=0,padx=(5,5),pady=(5,0),sticky=tk.E)
+        tk.Label(self.subframe_mash_stats, text="Setpoint-ACT:").grid(row=1,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_mash_stats, text="Mash Temp:").grid(row=2,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_mash_stats, text="Heater Temp:").grid(row=3,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_mash_stats, text="Heater Status:").grid(row=4,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_mash_stats, text="Heater DC:").grid(row=5,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_mash_stats, text="Pump Status:").grid(row=6,column=0,padx=(5,5),sticky=tk.E)
         
         self.stat_inMK=tk.StringVar(self.subframe_mash_stats,value=self.setMK_IN)
         self.mash_stat_INsetpoint_label=tk.Label(self.subframe_mash_stats, textvariable=self.stat_inMK,foreground="blue")
@@ -794,13 +872,13 @@ class brew_control:
         win_loc_y=150
         
         self.subframe_boil_stats = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
-        tk.Label(self.subframe_boil_stats, text="Setpoint-IN:",foreground="blue").grid(row=0,column=0,padx=(5,5),pady=(5,0))
-        tk.Label(self.subframe_boil_stats, text="Setpoint-ACT:").grid(row=1,column=0,padx=(5,5))
-        tk.Label(self.subframe_boil_stats, text="Boil Temp:").grid(row=2,column=0,padx=(5,5))
-        tk.Label(self.subframe_boil_stats, text="Control Mode:").grid(row=3,column=0,padx=(5,5))
-        tk.Label(self.subframe_boil_stats, text="Heater Status:").grid(row=4,column=0,padx=(5,5))
-        tk.Label(self.subframe_boil_stats, text="Heater DC-IN:",foreground="blue").grid(row=5,column=0,padx=(5,5))
-        tk.Label(self.subframe_boil_stats, text="Heater DC-ACT:").grid(row=6,column=0,padx=(5,5))
+        tk.Label(self.subframe_boil_stats, text="Setpoint-IN:",foreground="blue").grid(row=0,column=0,padx=(5,5),pady=(5,0),sticky=tk.E)
+        tk.Label(self.subframe_boil_stats, text="Setpoint-ACT:").grid(row=1,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_boil_stats, text="Boil Temp:").grid(row=2,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_boil_stats, text="Control Mode:").grid(row=3,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_boil_stats, text="Heater Status:").grid(row=4,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_boil_stats, text="Heater DC-IN:",foreground="blue").grid(row=5,column=0,padx=(5,5),sticky=tk.E)
+        tk.Label(self.subframe_boil_stats, text="Heater DC-ACT:").grid(row=6,column=0,padx=(5,5),sticky=tk.E)
         
         self.stat_inBK=tk.StringVar(self.subframe_boil_stats,value=self.setBK_IN)
         self.boil_stat_INsetpoint_label=tk.Label(self.subframe_boil_stats, textvariable=self.stat_inBK,foreground="blue")
@@ -832,6 +910,53 @@ class brew_control:
         
         self.subframe_boil_stats.place(x=win_loc_x, y=win_loc_y)
         tk.Label(self.master, text='BOIL STATS').place(x=win_loc_x+35, y=win_loc_y,anchor=tk.W)
+    
+    
+    #################### DC OPTIMIZATION STATS ####################
+    def init_DCopt_stats(self):
+        #Window location
+        win_loc_x=508
+        win_loc_y=335
+        
+        self.subframe_DCopt_stats = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
+        tk.Label(self.subframe_DCopt_stats, text="Boil Wt-IN:",foreground="blue").grid(row=0,column=2,padx=(5,0),pady=(5,0),sticky=tk.E)
+        tk.Label(self.subframe_DCopt_stats, text="Boil Wt-ACT:").grid(row=1,column=2,padx=(5,0),sticky=tk.E)
+        tk.Label(self.subframe_DCopt_stats, text="Mash Wt-IN:",foreground="blue").grid(row=0,column=0,padx=(5,0),pady=(5,0),sticky=tk.E)
+        tk.Label(self.subframe_DCopt_stats, text="Mash Wt-ACT:").grid(row=1,column=0,padx=(5,0),sticky=tk.E)
+        
+        self.stat_inDCBW=tk.StringVar(self.subframe_DCopt_stats,value=int(self.setDC_BW*100))
+        self.DCopt_stat_inBW_label=tk.Label(self.subframe_DCopt_stats, textvariable=self.stat_inDCBW,foreground="blue")
+        self.DCopt_stat_inBW_label.grid(row=0,column=3,pady=(5,0))
+        
+        self.stat_setDCBW=tk.StringVar(self.subframe_DCopt_stats,value=self.setDC_BW_IN)
+        self.DCopt_stat_setBW_label=tk.Label(self.subframe_DCopt_stats, textvariable=self.stat_setDCBW)
+        self.DCopt_stat_setBW_label.grid(row=1,column=3)
+        
+        self.stat_inDCMW=tk.StringVar(self.subframe_DCopt_stats,value=int(self.setDC_MW*100))
+        self.DCopt_stat_inMW_label=tk.Label(self.subframe_DCopt_stats, textvariable=self.stat_inDCMW,foreground="blue")
+        self.DCopt_stat_inMW_label.grid(row=0,column=1,pady=(5,0))
+        
+        self.stat_setDCMW=tk.StringVar(self.subframe_DCopt_stats,value=self.setDC_MW_IN)
+        self.DCopt_stat_setMW_label=tk.Label(self.subframe_DCopt_stats, textvariable=self.stat_setDCMW)
+        self.DCopt_stat_setMW_label.grid(row=1,column=1)
+    
+        self.subframe_DCopt_stats.place(x=win_loc_x, y=win_loc_y)
+        tk.Label(self.master, text='DUTY CYCLE OPT').place(x=win_loc_x+35, y=win_loc_y,anchor=tk.W)
+    
+    #################### DC OPTIMIZATION STATS ####################
+    def init_DCopt_ACT(self):
+        #Window location
+        win_loc_x=210
+        win_loc_y=260
+        
+        self.subframe_DCopt_act = tk.Frame(self.master, relief=tk.GROOVE, borderwidth=2)
+        tk.Label(self.subframe_DCopt_act, text="DC Optimization:").grid(row=0,column=0,padx=(10,0),pady=(10,10))
+    
+        self.stat_DCopt_act=tk.StringVar(self.subframe_DCopt_act,value='OFF')
+        self.stat_DCopt_act_label=tk.Label(self.subframe_DCopt_act, textvariable=self.stat_DCopt_act,foreground="red")
+        self.stat_DCopt_act_label.grid(row=0,column=1,padx=(0,10),pady=(10,10))
+    
+        self.subframe_DCopt_act.place(x=win_loc_x, y=win_loc_y)
 
 
 ################################################ CONTROL/FLOW FUNCTIONS ###############################################
@@ -950,6 +1075,12 @@ class brew_control:
         #Update the duty cycle in the stats box, this has to be updated here since it can't be updated from a subprocess using the multiprocessing method
         self.stat_heatB_DC.set('{:.0f}'.format(self.data_array[9]))
         self.stat_heatM_DC.set('{:.0f}'.format(self.data_array[10]))
+        
+        #Update duty cycle optimization algorithm status
+        if self.data_array[14]==1:
+            self.stat_DCopt_act.set('ON',foreground="green")
+        elif self.data_array[14]==0:
+            self.stat_DCopt_act.set('OFF',foreground="red")
 
         t2=time.time()
         next_loop_time=int((1000/self.temp_freq)-(t2-t1)*1000)
@@ -960,129 +1091,50 @@ class brew_control:
         self.temp_loop=self.master.after(next_loop_time, self.read_all_temps)
 
 
-    ## Function used to handle starting and stopping of multiprocessing process for mash control
-    def mash_StartStop(self):
-        if self.heatM_ON==1:
-            self.mashProc_EXIT.value=0
-            self.mash_proc=mp.Process(target=self.mash_process, args=(self.mashProc_EXIT,self.data_array))
-            self.mash_proc.start()
-        elif self.heatM_ON==0:
-            self.mashProc_EXIT.value=1
+    ## Function used to handle starting and stopping of multiprocessing process for mash and boil control using duty cycle optimization when necessary
+    def heater_StartStop(self):
+        if self.heatM_ON==1 or self.heatB_ON==1:
+            self.heater_control_Proc_EXIT.value=0
+            self.heater_control_proc=mp.Process(target=self.heater_control_process, args=(self.heater_control_Proc_EXIT,self.data_array))
+            self.heater_control_proc.start()
+        elif self.heatM_ON==0 and self.heatB_ON==0:
+            self.heater_control_Proc_EXIT.value=1
             try:
-                self.mash_proc.join()
+                self.heater_control_proc.join()
             except:
                 pass
+        else:
+            pass
 
-    
-    ## Mash control loop
-    def mash_process(self,mashProc_EXIT,data_array):
-        print('Mash process started.')
-        while mashProc_EXIT.value==0:
-            # Calculate duty cycle
-            data_array[10],data_array[12]=self.PI_ctrl(data_array[7],data_array[3],self.P_M,self.I_M,data_array[12]) #PI control to determine duty cycle
-            t_on=(data_array[10]/100)*self.DCM_T #sec
-            t_off=self.DCM_T-t_on; #sec
-            if t_on != 0:
-                #Turn mash heater ON
-                self.DAQ.setDigitalOutput(5,1)
-                time.sleep(t_on)
-                #Turn mash heater OFF only if duty cycle is not equal to 100%
-                if data_array[10] != 100:
-                    self.DAQ.setDigitalOutput(5,0)
-                    time.sleep(t_off)
-                else:
-                    pass
+
+    ## Heater control loop
+    def heater_control_process(self,heater_control_Proc_EXIT,data_array):
+        print('Heater control process started.')
+        while heater_control_Proc_EXIT.value==0:
+            #Calculate duty cycles for mash and boil heater
+            #Mash
+            if data_array[1]==1:
+                data_array[10],data_array[12]=self.PI_ctrl(data_array[7],data_array[3],self.P_M,self.I_M,data_array[12]) #PI control to determine duty cycle
+                t_on_M=(data_array[10]/100)*self.DCM_T #sec
+                t_off_M=self.DCM_T-t_on_M; #sec
             else:
-                time.sleep(self.DCM_T)
-        self.DAQ.setDigitalOutput(5,0)
-        print('Mash process stopped.')
-
-
-    ## Function used to handle starting and stopping of multiprocessing process for boil control
-    def boil_StartStop(self):
-        if self.boilMA==1 and self.heatB_ON==1:
-            #Make sure the manual boil process isn't running
-            try:
-                self.boilManProc_EXIT.value=1
-                self.boil_manual_proc.join()
-            except:
-                pass
-            #Start auto boil process
-            self.boilAutoProc_EXIT.value=0
-            self.boil_auto_proc=mp.Process(target=self.boil_auto_process, args=(self.boilAutoProc_EXIT,self.data_array))
-            self.boil_auto_proc.start()
-
-        elif self.boilMA==0 and self.heatB_ON==1:
-            #Make sure the auto boil process isn't running
-            try:
-                self.boilAutoProc_EXIT.value=1
-                self.boil_auto_proc.join()
-            except:
-                pass
-            #Start manual boil process
-            self.boilManProc_EXIT.value=0
-            self.boil_manual_proc=mp.Process(target=self.boil_manual_process, args=(self.boilManProc_EXIT,self.data_array))
-            self.boil_manual_proc.start()
-        
-        elif self.heatB_ON==0:
-            self.boilAutoProc_EXIT.value=1
-            self.boilManProc_EXIT.value=1
-            try:
-                self.boil_auto_proc.join()
-            except:
-                pass
-            try:
-                self.boil_manual_proc.join()
-            except:
-                pass
-
-
-    ## Boil control loop - auto mode
-    def boil_auto_process(self,boilAutoProc_EXIT,data_array):
-        print('Auto boil process started.')
-        while boilAutoProc_EXIT.value==0:
-            # Calculate duty cycle
-            data_array[9],data_array[13]=self.PI_ctrl(data_array[8],data_array[4],self.P_B,self.I_B,data_array[13]) #PI control to determine duty cycle
-            t_on=(data_array[9]/100)*self.DCB_T #sec
-            t_off=self.DCB_T-t_on; #sec
-            if t_on != 0:
-                #Turn boil heater ON
-                self.DAQ.setDigitalOutput(6,1)
-                time.sleep(t_on)
-                #Turn boil heater OFF only if duty cycle is not equal to 100%
-                if data_array[9] != 100:
-                    self.DAQ.setDigitalOutput(6,0)
-                    time.sleep(t_off)
-                else:
+                t_on_M=0
+            
+            #Boil
+            if data_array[2]==1:
+                if data_array[6]==1:
+                    data_array[9],data_array[13]=self.PI_ctrl(data_array[8],data_array[4],self.P_B,self.I_B,data_array[13]) #PI control to determine duty cycle
+                elif data_array[6]==0:
                     pass
+                t_on_B=(data_array[9]/100)*self.DCB_T #sec
+                t_off_B=self.DCB_T-t_on_B; #sec
             else:
-                time.sleep(self.DCB_T)
-        self.DAQ.setDigitalOutput(6,0)
-        print('Auto boil process stopped.')
+                t_on_B=0
 
+# Figure out if the amount of time would cause the optimization algorithm to activate
 
-    ## Boil control loop - manual mode
-    def boil_manual_process(self,boilManProc_EXIT,data_array):
-        print('Manual boil process started.')
-        while boilManProc_EXIT.value==0:
-            # Duty cyle set by user input
-            t_on=(data_array[9]/100)*self.DCB_T #sec
-            t_off=self.DCB_T-t_on; #sec
-            if t_on != 0:
-                #Turn boil heater ON
-                self.DAQ.setDigitalOutput(6,1)
-                time.sleep(t_on)
-                #Turn boil heater OFF only if duty cycle is not equal to 100%
-                if data_array[9] != 100:
-                    self.DAQ.setDigitalOutput(6,0)
-                    time.sleep(t_off)
-                else:
-                    pass
-            else:
-                time.sleep(self.DCB_T)
-        self.DAQ.setDigitalOutput(6,0)
-        print('Manual boil process stopped.')
-    
+### data_array[12] and [13] need to be reset when the control loop goes active for the first time or after a manual-to-auto switch
+
 
     ## Function used to handle starting and stopping of multiprocessing process for writing the log file
     def logging_StartStop(self):
@@ -1129,7 +1181,11 @@ class brew_control:
             print('Boil duty cycle input = %d' % self.heatB_DC_IN)
             print('Boil duty cycle = %d' % self.heatB_DC)
             print('Mash duty cycle = %d' % self.heatM_DC)
-            print('Data logging = %d\n' % self.log_ON)
+            print('Data logging = %d' % self.log_ON)
+            print('Duty cycle optimization = %d' % self.DCopt)
+            print('Duty cycle weight mash input = %d' % self.setDC_MW_IN)
+            print('Duty cycle weight boil input = %d' % (100-self.setDC_MW_IN))
+            print('Duty cycle weight (M | B) = %.2f | %.2f\n' % (self.setDC_MW,self.setDC_BW))
         return None
 
 
