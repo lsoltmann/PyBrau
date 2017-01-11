@@ -47,8 +47,7 @@
             
             
     OPEN ITEMS:
-    1. Add duty cycle optimization routine
-    2. Verify that 'set' button doesn't overide automatic control, particularly DC
+    1. Verify that 'set' button doesn't overide automatic control, particularly DC
     
     '''
 
@@ -128,8 +127,7 @@ class brew_control:
         self.setDC_MW=0.5
         
         #Control variables
-        self.DCB_T=0.5 #Duty cycle period in seconds for boil heater ***DCB_T and DCM_T should be equal
-        self.DCM_T=0.5 #Duty cycle period in seconds for mash heater
+        self.DC_T=0.5 #Duty cycle period in seconds for heaters
         self.P_M=0.375
         self.I_M=0.09375
         self.P_B=0.375
@@ -155,9 +153,9 @@ class brew_control:
         #Array[11]=Logging frequency
         #Array[12]=error sum - mash
         #Array[13]=error sum -boil
-        #Array[14]=dutcy cycle control algorithm
-        #Array[15]=dutcy cycle weight, mash
-        #Array[16]=dutcy cycle weight, boil
+        #Array[14]=duty cycle control algorithm
+        #Array[15]=duty cycle weight, mash
+        #Array[16]=duty cycle weight, boil
         self.data_array=mp.Array('d',[self.pump_ON,self.heatM_ON,self.heatB_ON,0.0,0.0,0.0,self.boilMA,self.setMK,self.setBK,self.heatB_DC,self.heatM_DC,self.log_freq,self.esum_M,self.esum_B,self.DCopt,self.setDC_MW,self.setDC_BW])
         self.loggingProc_EXIT=mp.Value('i', 0)
         self.boilManProc_EXIT=mp.Value('i', 0)
@@ -183,7 +181,6 @@ class brew_control:
     
         ## FOR DEBUG ONLY
         self.debug_display()
-
 
 
     #################### USB DLP-IO8-G DAQ CONNECTION WINDOW AND BUTTON ####################
@@ -254,10 +251,6 @@ class brew_control:
         #Close device
         else:
             try:
-                #Set all outputs to zero
-                self.DAQ.setDigitalOutput(4,0)
-                self.DAQ.setDigitalOutput(5,0)
-                self.DAQ.setDigitalOutput(6,0)
                 #Cancel temp loop
                 self.master.after_cancel(self.temp_loop)
                 self.first_time=1
@@ -273,6 +266,10 @@ class brew_control:
                     self.logging_proc.join()
                 except:
                     pass
+                #Set all outputs to zero
+                self.DAQ.setDigitalOutput(4,0)
+                self.DAQ.setDigitalOutput(5,0)
+                self.DAQ.setDigitalOutput(6,0)
                 #Disconnect from device
                 self.DAQ.disconnect()
                 self.comms_status=0
@@ -370,7 +367,7 @@ class brew_control:
         
         # Start/stop mash process
         self.data_array[1]=self.heatM_ON
-        self.mash_StartStop()
+        self.heater_StartStop()
         
         ## FOR DEBUG ONLY
         self.debug_display()
@@ -385,10 +382,12 @@ class brew_control:
             boil_button.config(text="BOIL      <OFF>  ON",justify=tk.LEFT)
             self.heatB_ON=0
             self.stat_heatB_ON.set('OFF')
+            self.esum_B=0
+            self.data_array[13]=self.esum_B
         
         # Start/stop boil process
         self.data_array[2]=self.heatB_ON
-        self.boil_StartStop()
+        self.heater_StartStop()
         
         ## FOR DEBUG ONLY
         self.debug_display()
@@ -419,7 +418,7 @@ class brew_control:
         
         self.data_array[0]=self.pump_ON
         self.data_array[1]=self.heatM_ON
-        self.mash_StartStop()
+        self.heater_StartStop()
         
         ## FOR DEBUG ONLY
         self.debug_display()
@@ -441,7 +440,9 @@ class brew_control:
         self.data_array[2]=self.heatB_ON
         self.data_array[6]=self.boilMA
         self.data_array[9]=self.heatB_DC
-        self.boil_StartStop()
+        self.esum_B=0
+        self.data_array[13]=self.esum_B
+        self.heater_StartStop()
 
         ## FOR DEBUG ONLY
         self.debug_display()
@@ -970,7 +971,7 @@ class brew_control:
         
         ##Calculate duty cycle for heater
         error=SP-PV
-        esum=esum+(error*self.DCM_T)
+        esum=esum+(error*self.DC_T)
         # Limit the integrator to prevent windup
         if esum>5.0:
             esum=5.0
@@ -1077,9 +1078,10 @@ class brew_control:
         self.stat_heatM_DC.set('{:.0f}'.format(self.data_array[10]))
         
         #Update duty cycle optimization algorithm status
-        if self.data_array[14]==1:
+        self.DCopt=self.data_array[14]
+        if self.DCopt==1:
             self.stat_DCopt_act.set('ON',foreground="green")
-        elif self.data_array[14]==0:
+        elif self.DCopt==0:
             self.stat_DCopt_act.set('OFF',foreground="red")
 
         t2=time.time()
@@ -1111,14 +1113,13 @@ class brew_control:
     def heater_control_process(self,heater_control_Proc_EXIT,data_array):
         print('Heater control process started.')
         while heater_control_Proc_EXIT.value==0:
-            #Calculate duty cycles for mash and boil heater
+            #Calculate raw duty cycles for mash and boil heater
             #Mash
             if data_array[1]==1:
                 data_array[10],data_array[12]=self.PI_ctrl(data_array[7],data_array[3],self.P_M,self.I_M,data_array[12]) #PI control to determine duty cycle
-                t_on_M=(data_array[10]/100)*self.DCM_T #sec
-                t_off_M=self.DCM_T-t_on_M; #sec
+                u_M=data_array[10]/100
             else:
-                t_on_M=0
+                u_M=0
             
             #Boil
             if data_array[2]==1:
@@ -1126,14 +1127,73 @@ class brew_control:
                     data_array[9],data_array[13]=self.PI_ctrl(data_array[8],data_array[4],self.P_B,self.I_B,data_array[13]) #PI control to determine duty cycle
                 elif data_array[6]==0:
                     pass
-                t_on_B=(data_array[9]/100)*self.DCB_T #sec
-                t_off_B=self.DCB_T-t_on_B; #sec
+                u_B=data_array[9]/100
             else:
-                t_on_B=0
+                u_B=0
 
-# Figure out if the amount of time would cause the optimization algorithm to activate
+            #Apply duty cycle optimization algorithm, if needed
+            #
+            #Algorithm is based on the cost function:
+            #    cost=wB*[uB-uB_O]^2+wM*[uM-uM_O]^2
+            #where  wB=weight applied to boil duty cycle input
+            #       wM=weight applied to mash duty cycle input
+            #       uB=raw boil duty cycle
+            #       uM=raw mash duty cycle
+            #       uB_O=optimized boil duty cycle
+            #       uM_O=optimized mash duty cycle
+            #
+            #Constraints are:
+            #    wB+wM=1
+            #    uB_O+uM_O=1
+            #
+            if (u_B+u_M)>1:
+                data_array[14]=1
+                u_B=data_array[15]*(1-u_M)+data_array[16]*u_B
+                u_M=1-u_B
+            else:
+                data_array[14]=0
+    
+            t_on_M=u_M*self.DC_T #sec
+            t_off_M=self.DC_T-t_on_M; #sec
+            t_on_B=u_B*self.DC_T #sec
+            t_off_B=self.DC_T-t_on_B; #sec
+            
+            delta_t=abs(t_on_M-t_on_B)
+            
+            self.DAQ.setDigitalOutput(6,0)
+            self.DAQ.setDigitalOutput(5,1)
+            time.sleep(t_on_M)
+            self.DAQ.setDigitalOutput(5,0)
+            time.sleep(delta_t)
+            self.DAQ.setDigitalOutput(6,1)
+            time.sleep(t_on_B)
+            
+            
+            
+            
+            #Turn ON/OFF appropriate heater
+            t1=time.time()
+            while (time.time()-t1 <= self.DC_T):
+                if time.time()-t1 >= t_on_M:
+                    self.DAQ.setDigitalOutput(5,0)
+                else:
+                    if self.getDigitalInput(6)==1: #Do not allow mash heater and boil heater to be on at same time. Check if boil heater is on and then turn it off before turning mash heater on
+                        self.DAQ.setDigitalOutput(6,0)
+                    else:
+                        pass
+                    self.DAQ.setDigitalOutput(5,1)
+                if time.time()-t1 <= t_off_B:
+                    self.DAQ.setDigitalOutput(6,0)
+                else:
+                    if self.getDigitalInput(5)==1: #See above comment
+                        self.DAQ.setDigitalOutput(5,0)
+                    else:
+                        pass
+                    self.DAQ.setDigitalOutput(6,1)
 
-### data_array[12] and [13] need to be reset when the control loop goes active for the first time or after a manual-to-auto switch
+        self.DAQ.setDigitalOutput(5,0)
+        self.DAQ.setDigitalOutput(6,0)
+        print('Heater control process stopped.')
 
 
     ## Function used to handle starting and stopping of multiprocessing process for writing the log file
