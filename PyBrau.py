@@ -1160,36 +1160,29 @@ class brew_control:
             
             delta_t=abs(t_on_M-t_on_B)
             
-            self.DAQ.setDigitalOutput(6,0)
-            self.DAQ.setDigitalOutput(5,1)
-            time.sleep(t_on_M)
-            self.DAQ.setDigitalOutput(5,0)
-            time.sleep(delta_t)
-            self.DAQ.setDigitalOutput(6,1)
-            time.sleep(t_on_B)
-            
-            
-            
-            
-            #Turn ON/OFF appropriate heater
-            t1=time.time()
-            while (time.time()-t1 <= self.DC_T):
-                if time.time()-t1 >= t_on_M:
-                    self.DAQ.setDigitalOutput(5,0)
-                else:
-                    if self.getDigitalInput(6)==1: #Do not allow mash heater and boil heater to be on at same time. Check if boil heater is on and then turn it off before turning mash heater on
-                        self.DAQ.setDigitalOutput(6,0)
-                    else:
-                        pass
-                    self.DAQ.setDigitalOutput(5,1)
-                if time.time()-t1 <= t_off_B:
+            #Turn ON or OFF appropriate heater based on controller input conditions
+            if (u_M==1 and u_B==0):
+                if self.getDigitalInput(6)==1: #Do not allow mash heater and boil heater to be on at same time. Check if boil heater is on and then turn it off before turning mash heater on
                     self.DAQ.setDigitalOutput(6,0)
-                else:
-                    if self.getDigitalInput(5)==1: #See above comment
-                        self.DAQ.setDigitalOutput(5,0)
                     else:
                         pass
-                    self.DAQ.setDigitalOutput(6,1)
+                self.DAQ.setDigitalOutput(5,1)
+                time.sleep(t_on_M)
+            elif (u_B==1 and u_M==0):
+                if self.getDigitalInput(5)==1: #See above comment
+                    self.DAQ.setDigitalOutput(5,0)
+                    else:
+                        pass
+                self.DAQ.setDigitalOutput(6,1)
+                time.sleep(t_on_B)
+            else:
+                self.DAQ.setDigitalOutput(6,0)
+                self.DAQ.setDigitalOutput(5,1)
+                time.sleep(t_on_M)
+                self.DAQ.setDigitalOutput(5,0)
+                time.sleep(delta_t)
+                self.DAQ.setDigitalOutput(6,1)
+                time.sleep(t_on_B)
 
         self.DAQ.setDigitalOutput(5,0)
         self.DAQ.setDigitalOutput(6,0)
