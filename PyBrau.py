@@ -1116,16 +1116,17 @@ class brew_control:
     def write_log(self):
         if self.log_ON==1:
             if self.first_log==1:
-                timestr = time.strftime("%Y%m%d-%H%M")
+                timestr = time.strftime("%Y-%m-%d--%H-%M")
                 self.log_file=open('PyBrau_Log_'+timestr+'.txt','w')
                 self.log_file.write('PyBrau Data Log\n')
                 self.log_file.write('%s\n\n' % timestr)
-                self.log_file.write('Time(sec) Pump Mash_heater Boil_heater Mash_temp(F) Boil_temp(F) Mash_heater_temp(F) Boil_type Mash_setpoint(F) Boil_setpoint(F) Boil_dutycycle_manual(%) Boil_dutycycle_active(%) Mash_dutycycle_active(%) Mash_errorSum Boil_errorSum DC_opt\n')
+                self.log_file.write('#LABELS Time Pump Mash_heater Boil_heater Mash_temp Boil_temp Mash_heater_temp Boil_type Mash_setpoint Boil_setpoint Boil_dutycycle_manual Boil_dutycycle_active Mash_dutycycle_active Mash_errorSum Boil_errorSum DC_opt\n')
+                self.log_file.write('#UNITS sec N/A N/A degF degF degF degF degF % % % N/A N/A N/A\n')
                 self.tstart=time.time()
                 self.first_log=0
             else:
                 tsamp=time.time()
-                self.log_file.write('%.1f %d %d %d %.1f %.1f %.1f %d %.1f %.1f %d %d %.1f %.1f\n' % (tsamp-self.tstart,self.pump_ON,self.heatM_ON,self.heatB_ON,self.tempMK,self.tempBK,self.tempMH,self.boilMA,self.setMK,self.setBK,self.heatB_DC_man,self.heatB_DC,self.heatM_DC,self.esum_M,self.esum_B,self.DCopt))
+                self.log_file.write('%.1f %d %d %d %.1f %.1f %.1f %d %.1f %.1f %d %d %d %.1f %.1f %d\n' % (tsamp-self.tstart,self.pump_ON,self.heatM_ON,self.heatB_ON,self.tempMK,self.tempBK,self.tempMH,self.boilMA,self.setMK,self.setBK,self.heatB_DC_man,self.heatB_DC,self.heatM_DC,self.esum_M,self.esum_B,self.DCopt))
         if self.log_ON==0:
             try:
                 self.log_file.close()
