@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 '''
     PyBrau.py
     
@@ -26,7 +27,7 @@
     
     Notes:
     - Written for Python3
-    - Tested on MacBook Pro under OSX10.11
+    - Tested on MacBook Pro under OSX10.11 and RaspberryPi2
     - Temperature sensors used are 10K NTC B57861S thermistor using a 5V voltage divider with 10K resistor
     - Thermistor wiring:
         V+ --- R10K --- Pin# --- Therm --- GND
@@ -1118,10 +1119,10 @@ class brew_control:
             if self.first_log==1:
                 timestr = time.strftime("%Y-%m-%d--%H-%M")
                 self.log_file=open('PyBrau_Log_'+timestr+'.txt','w')
-                self.log_file.write('PyBrau Data Log\n')
-                self.log_file.write('%s\n\n' % timestr)
+                self.log_file.write('# PyBrau Data Log\n')
+                self.log_file.write('# %s\n\n' % timestr)
                 self.log_file.write('#LABELS Time Pump Mash_heater Boil_heater Mash_temp Boil_temp Mash_heater_temp Boil_type Mash_setpoint Boil_setpoint Boil_dutycycle_manual Boil_dutycycle_active Mash_dutycycle_active Mash_errorSum Boil_errorSum DC_opt\n')
-                self.log_file.write('#UNITS sec N/A N/A degF degF degF degF degF % % % N/A N/A N/A\n')
+                self.log_file.write('#UNITS sec On/Off On/Off On/Off degF degF degF Man/Auto degF degF % % % N/A N/A On/Off\n')
                 self.tstart=time.time()
                 self.first_log=0
             else:
