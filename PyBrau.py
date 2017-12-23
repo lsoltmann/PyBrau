@@ -10,7 +10,8 @@
                  the offical Raspberry Pi touch screen.
     
     Revision History
-    14 Jan 2017 - Created and debugged
+    14 Jan 2017 - Created
+    22 Dec 2017 - Tested and debugged
     
     Author: Lars Soltmann
     
@@ -27,7 +28,7 @@
     
     Notes:
     - Written for Python3
-    - Tested on MacBook Pro under OSX10.11 and RaspberryPi2
+    - Tested on MacBook Pro under OSX10.11 and Raspbian Jessie
     - Temperature sensors used are 10K NTC B57861S thermistor using a 5V voltage divider with 10K resistor
     - Thermistor wiring:
         V+ --- R10K --- Pin# --- Therm --- GND
@@ -45,7 +46,7 @@
             
             
     OPEN ITEMS:
-    1. Complete system test
+    1. <None>
     
     '''
 
@@ -1084,15 +1085,15 @@ class brew_control:
             self.subcanvas_boil.itemconfig(self.boil_tolerance,fill='green')
 
         ##Change the boil kettle water color based on temperature
-        if self.tempMK<=100:
+        if self.tempBK<=100:
             self.subcanvas_boil.itemconfig(self.boil_water_color,fill='#0000FF')
-        elif self.tempMK<=120:
+        elif self.tempBK<=120:
             self.subcanvas_boil.itemconfig(self.boil_water_color,fill='#7F00FF')
-        elif self.tempMK<=140:
+        elif self.tempBK<=140:
             self.subcanvas_boil.itemconfig(self.boil_water_color,fill='#FF00FF')
-        elif self.tempMK<=160:
+        elif self.tempBK<=160:
             self.subcanvas_boil.itemconfig(self.boil_water_color,fill='#FF007F')
-        elif self.tempMK>=180:
+        elif self.tempBK>=180:
             self.subcanvas_boil.itemconfig(self.boil_water_color,fill='#FF0000')
 
         ##Update temperatures in stats box
