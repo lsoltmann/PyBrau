@@ -921,7 +921,16 @@ class brew_control:
         tempMK_raw=self.THERM.getTempF(10000,self.VREF,tempMK_volts)
         tempMH_raw=self.THERM.getTempF(10000,self.VREF,tempMH_volts)
         tempBK_raw=self.THERM.getTempF(10000,self.VREF,tempBK_volts)
+
+        #Set temperatures to zero if reading is less than zero (sensor unplugged)
+        if tempMK_raw<0:
+            tempMK_raw=0
+        if tempBK_raw<0:
+            tempBK_raw=0
+        if tempMH_raw<0:
+            tempMH_raw=0
         
+        #For the first time through, the filter needs a previous value so just set it to the current value
         if self.first_time==1:
             self.tempMK=tempMK_raw
             self.tempMH=tempMH_raw
